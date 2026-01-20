@@ -1,5 +1,6 @@
 import sys
 import math
+import numpy as np  # Додано numpy для роботи з матрицями
 from PySide6.QtCore import Qt, QPointF, QTimer
 from PySide6.QtGui import QPainter, QPen, QColor, QPainterPath, QTransform
 from PySide6.QtWidgets import (
@@ -9,29 +10,54 @@ from PySide6.QtWidgets import (
 )
 
 
-
-# 1. МАТЕМАТИЧНЕ ЯДРО (Cardinal Spline)
+# 1. МАТЕМАТИЧНЕ ЯДРО (Engineering Form / Matrix)
 
 class SplineMath:
     @staticmethod
-    def get_cardinal_point(p0, p1, p2, p3, t, tension):
+    def get_segment_points(p0, p1, p2, p3, tension, segments=30):
         """
-        Метод 4: Криві 3-го порядку (Cardinal Spline).
+        Розрахунок точок сегмента кривої 3-го порядку в інженерному (алгебраїчному) вигляді.
+        P(t) = A*t^3 + B*t^2 + C*t + D
+        Коефіцієнти A, B, C, D знаходяться через матрицю Кардинального сплайна.
         """
-        s = (1 - tension) / 2
+        # Параметр натягу s
+        s = (1 - tension) / 2.0
 
-        t2 = t * t
-        t3 = t2 * t
+        # Матриця Кардинального сплайна (Basis Matrix)
+        # | -s   2-s   s-2   s |
+        # | 2s   s-3  3-2s  -s |
+        # | -s    0     s    0 |
+        # |  0    1     0    0 |
+        M = np.array([
+            [-s, 2 - s, s - 2, s],
+            [2 * s, s - 3, 3 - 2 * s, -s],
+            [-s, 0, s, 0],
+            [0, 1, 0, 0]
+        ])
 
-        b1 = -s * t3 + 2 * s * t2 - s * t
-        b2 = (2 - s) * t3 + (s - 3) * t2 + 1
-        b3 = (s - 2) * t3 + (3 - 2 * s) * t2 + s * t
-        b4 = s * t3 - s * t2
+        # Вектори геометрії (Geometry Vectors)
+        Gx = np.array([p0.x(), p1.x(), p2.x(), p3.x()])
+        Gy = np.array([p0.y(), p1.y(), p2.y(), p3.y()])
 
-        x = p0.x() * b1 + p1.x() * b2 + p2.x() * b3 + p3.x() * b4
-        y = p0.y() * b1 + p1.y() * b2 + p2.y() * b3 + p3.y() * b4
+        # Алгебраїчні коефіцієнти (Algebraic Coefficients)
+        # C = M * G
+        Cx = M @ Gx
+        Cy = M @ Gy
 
-        return QPointF(x, y)
+        points = []
+        for i in range(1, segments + 1):
+            t = i / segments
+            # Обчислення полінома: At^3 + Bt^2 + Ct + D
+            # Cx[0]*t^3 + Cx[1]*t^2 + Cx[2]*t + Cx[3]
+            t2 = t * t
+            t3 = t2 * t
+
+            x = Cx[0] * t3 + Cx[1] * t2 + Cx[2] * t + Cx[3]
+            y = Cy[0] * t3 + Cy[1] * t2 + Cy[2] * t + Cy[3]
+            points.append(QPointF(x, y))
+
+        return points
+
 
 
 # 2. КЛАС ПОЛОТНА (CANVAS)
@@ -39,39 +65,28 @@ class SplineMath:
 class CanvasWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet("background-color: #2b2b2b;")  # Темний фон як на фото
+        self.setStyleSheet("background-color: #2b2b2b;")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # КОНТУР ЯХТИ
+        # КОНТУР ЯХТИ (опорні точки)
         self.points = [
-            # 1. ТОП ЩОГЛИ
-            QPointF(0, 200),
-
-            # ПРАВЕ ВІТРИЛО (ВЕЛИКЕ)
-            QPointF(25, 160),  # Вигин 1
-            QPointF(50, 100),  # Вигин 2
-            QPointF(65, 50),  # Зовнішній кут
-            QPointF(10, 50),  # Внутрішній кут
-
-            # ПРАВИЙ БОРТ
-            QPointF(150, 20),  # Ніс/Корма справа (Палуба)
-            QPointF(100, -30),  # Спуск до води
-            QPointF(40, -45),  # Кіль справа
-
-            # ЛІВИЙ БОРТ (ДЗЕРКАЛЬНИЙ)
-            QPointF(-40, -45),  # Кіль зліва
-            QPointF(-100, -30),  # Спуск до води
-            QPointF(-150, 20),  # Ніс/Корма зліва (Палуба)
-
-            # ЛІВЕ ВІТРИЛО (МЕНШЕ)
-            QPointF(-10, 50),  # Внутрішній кут
-            QPointF(-70, 50),  # Зовнішній кут
-            QPointF(-35, 140),  # Вигин вітрила
-
-            # (Далі контур замкнеться на точку 0, 200 автоматично)
+            QPointF(0, 200),  # ТОП ЩОГЛИ
+            QPointF(25, 160),  # ПРАВЕ ВІТРИЛО
+            QPointF(50, 100),
+            QPointF(65, 50),
+            QPointF(10, 50),
+            QPointF(150, 20),  # ПРАВИЙ БОРТ
+            QPointF(100, -30),
+            QPointF(40, -45),
+            QPointF(-40, -45),  # ЛІВИЙ БОРТ
+            QPointF(-100, -30),
+            QPointF(-150, 20),
+            QPointF(-10, 50),  # ЛІВЕ ВІТРИЛО
+            QPointF(-70, 50),
+            QPointF(-35, 140)
         ]
 
-        # Цільовий контур для анімації (Коло)
+        # Ціль для анімації (Коло)
         self.target_shape = []
         radius = 150
         for i in range(len(self.points)):
@@ -125,7 +140,7 @@ class CanvasWidget(QWidget):
             self.current_points[i] = QPointF(new_x, new_y)
         self.update()
 
-    # Події миші
+    # --- Mouse Events ---
     def mousePressEvent(self, event):
         pos = self.get_logical_pos(event.position())
         if event.button() == Qt.MouseButton.LeftButton:
@@ -166,7 +181,7 @@ class CanvasWidget(QWidget):
         y = -(screen_pos.y() - cy - self.offset_y) / self.scale_factor
         return QPointF(x, y)
 
-    # МАЛЮВАННЯ
+    # --- Painting ---
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -180,58 +195,54 @@ class CanvasWidget(QWidget):
 
         painter.setTransform(self.transform_matrix, True)
 
-        # 1. Каркас (Полігон) - сірий пунктир
+        # 1. Каркас
         if self.show_polygon:
             pen_poly = QPen(QColor("#808080"), 1, Qt.DashLine)
             pen_poly.setCosmetic(True)
             painter.setPen(pen_poly)
-
             poly_path = QPainterPath()
-            poly_path.moveTo(self.current_points[0])
-            for p in self.current_points[1:]:
-                poly_path.lineTo(p)
-            poly_path.closeSubpath()
+            if self.current_points:
+                poly_path.moveTo(self.current_points[0])
+                for p in self.current_points[1:]:
+                    poly_path.lineTo(p)
+                poly_path.closeSubpath()
             painter.drawPath(poly_path)
 
-        # 2. Криволінійний контур
+        # 2. Крива (Інженерний вигляд: розрахунок коефіцієнтів)
         curve_path = QPainterPath()
         pts = self.current_points
         n = len(pts)
-        curve_path.moveTo(pts[0])
+        if n > 0:
+            curve_path.moveTo(pts[0])
+            for i in range(n):
+                # 4 точки для сегмента (ковзне вікно)
+                p0 = pts[(i - 1) % n]
+                p1 = pts[i]
+                p2 = pts[(i + 1) % n]
+                p3 = pts[(i + 2) % n]
 
-        for i in range(n):
-            p0 = pts[(i - 1) % n]
-            p1 = pts[i]
-            p2 = pts[(i + 1) % n]
-            p3 = pts[(i + 2) % n]
-
-            steps = 30
-            for s in range(1, steps + 1):
-                t = s / steps
-                pt = SplineMath.get_cardinal_point(p0, p1, p2, p3, t, self.tension)
-                curve_path.lineTo(pt)
+                # Отримуємо точки сегмента через матричний розрахунок коефіцієнтів
+                segment_points = SplineMath.get_segment_points(p0, p1, p2, p3, self.tension)
+                for pt in segment_points:
+                    curve_path.lineTo(pt)
 
         pen_curve = QPen(QColor("#0099FF"), 2)
         pen_curve.setCosmetic(True)
         painter.setPen(pen_curve)
-
         brush_color = QColor("#1A3A5A")
         brush_color.setAlpha(150)
         painter.setBrush(brush_color)
-
         painter.drawPath(curve_path)
 
-        # 3. Точки (Червоні, великі)
+        # 3. Вузли
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor("red"))
-        point_r = 7 / self.scale_factor  # Трохи збільшив точки
+        point_r = 7 / self.scale_factor
         for p in self.current_points:
             painter.drawEllipse(p, point_r, point_r)
 
     def draw_grid(self, painter):
-        # Світла сітка на темному фоні
-        pen = QPen(QColor("#505050"))
-        pen.setWidthF(1)
+        pen = QPen(QColor("#505050"), 0)
         pen.setCosmetic(True)
         painter.setPen(pen)
         limit = 2000
@@ -239,8 +250,6 @@ class CanvasWidget(QWidget):
         for i in range(-limit, limit, step):
             painter.drawLine(i, -limit, i, limit)
             painter.drawLine(-limit, i, limit, i)
-
-        # Осі координат (чорні, товстіші)
         pen.setColor(QColor("#000000"))
         pen.setWidth(2)
         painter.setPen(pen)
@@ -253,35 +262,31 @@ class CanvasWidget(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Лабораторна №3: Яхта (Фінальна)")
+        self.setWindowTitle("Лабораторна №3: Яхта (Алгебраїчні криві)")
         self.resize(1200, 800)
 
         central = QWidget()
         self.setCentralWidget(central)
         layout = QHBoxLayout(central)
 
-        # ЛІВА ПАНЕЛЬ
+        # Controls
         controls = QWidget()
         controls.setFixedWidth(340)
         ctrl_layout = QVBoxLayout(controls)
 
         grp_params = QGroupBox("Налаштування")
         grid_params = QGridLayout()
-
         self.chk_poly = QCheckBox("Показати каркас")
         self.chk_poly.setChecked(True)
         self.chk_poly.stateChanged.connect(self.toggle_poly)
-
         self.spin_tension = QDoubleSpinBox()
         self.spin_tension.setRange(-2.0, 2.0)
         self.spin_tension.setSingleStep(0.1)
         self.spin_tension.setValue(0.0)
         self.spin_tension.valueChanged.connect(self.update_tension)
-
         grid_params.addWidget(self.chk_poly, 0, 0, 1, 2)
         grid_params.addWidget(QLabel("Натяг (Tension):"), 1, 0)
         grid_params.addWidget(self.spin_tension, 1, 1)
-
         grp_params.setLayout(grid_params)
         ctrl_layout.addWidget(grp_params)
 
@@ -296,13 +301,11 @@ class MainWindow(QMainWindow):
 
         grp_trans = QGroupBox("Евклідові перетворення")
         grid_trans = QGridLayout()
-
         self.spin_dx = self.create_spin(0, -500, 500)
         self.spin_dy = self.create_spin(0, -500, 500)
         self.spin_angle = self.create_spin(0, -360, 360)
         self.spin_sx = self.create_spin(1, 0.1, 5, step=0.1)
         self.spin_sy = self.create_spin(1, 0.1, 5, step=0.1)
-
         grid_trans.addWidget(QLabel("Зсув X:"), 0, 0);
         grid_trans.addWidget(self.spin_dx, 0, 1)
         grid_trans.addWidget(QLabel("Зсув Y:"), 1, 0);
@@ -313,12 +316,10 @@ class MainWindow(QMainWindow):
         grid_trans.addWidget(self.spin_sx, 3, 1)
         grid_trans.addWidget(QLabel("Масштаб Y:"), 4, 0);
         grid_trans.addWidget(self.spin_sy, 4, 1)
-
         grp_trans.setLayout(grid_trans)
         ctrl_layout.addWidget(grp_trans)
 
         ctrl_layout.addStretch()
-
         self.canvas = CanvasWidget()
         layout.addWidget(controls)
         layout.addWidget(self.canvas)
@@ -347,11 +348,8 @@ class MainWindow(QMainWindow):
 
     def update_transform(self):
         self.canvas.set_transform_params(
-            self.spin_dx.value(),
-            self.spin_dy.value(),
-            self.spin_angle.value(),
-            self.spin_sx.value(),
-            self.spin_sy.value()
+            self.spin_dx.value(), self.spin_dy.value(),
+            self.spin_angle.value(), self.spin_sx.value(), self.spin_sy.value()
         )
 
     def toggle_anim(self):
@@ -364,18 +362,16 @@ class MainWindow(QMainWindow):
 
     def anim_tick(self):
         self.anim_curr_val += 0.02 * self.anim_direction
-
         if self.anim_curr_val >= 1.0:
-            self.anim_curr_val = 1.0
+            self.anim_curr_val = 1.0;
             self.timer.stop()
-            self.canvas.is_animating = False
+            self.canvas.is_animating = False;
             self.btn_anim.setChecked(True)
         elif self.anim_curr_val <= 0.0:
-            self.anim_curr_val = 0.0
+            self.anim_curr_val = 0.0;
             self.timer.stop()
-            self.canvas.is_animating = False
+            self.canvas.is_animating = False;
             self.btn_anim.setChecked(False)
-
         self.canvas.update_animation_state(self.anim_curr_val)
 
 
