@@ -16,33 +16,27 @@ class RationalBezierMath:
     def get_point(t, p0, p1, p2, p3, w0, w1, w2, w3):
         """
         Розрахунок точки на раціональній кривій Безьє 3-го порядку.
-        Формула: P(t) = Sum(wi * Pi * Bi(t)) / Sum(wi * Bi(t))
-        де Bi(t) - поліноми Бернштейна.
+        P(t) = Sum(wi * Pi * Bi(t)) / Sum(wi * Bi(t))
         """
-        t2 = t * t
-        t3 = t2 * t
         mt = 1 - t
         mt2 = mt * mt
         mt3 = mt2 * mt
+        t2 = t * t
+        t3 = t2 * t
 
-        # Базисні функції Бернштейна
-        b0 = mt3
-        b1 = 3 * mt2 * t
-        b2 = 3 * mt * t2
-        b3 = t3
+        b0 = mt3  # (1-t)^3
+        b1 = 3 * mt2 * t  # 3t(1-t)^2
+        b2 = 3 * mt * t2  # 3t^2(1-t)
+        b3 = t3  # t^3
 
-        # Чисельник (зважена сума координат)
-        # x(t) = w0*x0*b0 + w1*x1*b1 + ...
-        # y(t) = w0*y0*b0 + w1*y1*b1 + ...
+        # Чисельник
         nx = w0 * p0.x() * b0 + w1 * p1.x() * b1 + w2 * p2.x() * b2 + w3 * p3.x() * b3
         ny = w0 * p0.y() * b0 + w1 * p1.y() * b1 + w2 * p2.y() * b2 + w3 * p3.y() * b3
 
-        # Знаменник (сума ваг)
-        # w(t) = w0*b0 + w1*b1 + w2*b2 + w3*b3
+        # Знаменник
         d = w0 * b0 + w1 * b1 + w2 * b2 + w3 * b3
 
-        if d == 0:
-            return QPointF(0, 0)  # Захист від ділення на нуль
+        if abs(d) < 1e-6: return p0
 
         return QPointF(nx / d, ny / d)
 
@@ -51,14 +45,15 @@ class RationalBezierMath:
 
 class BezierNode:
     def __init__(self, pos, type='corner'):
-        self.pos = pos  # P0 / P3 (Вузол)
-        self.handle_in = pos  # Вхідний контроль (для попереднього сегмента)
-        self.handle_out = pos  # Вихідний контроль (P1 для поточного)
+        self.pos = pos  # Вузол
+        self.handle_in = pos  # Вхідний контроль
+        self.handle_out = pos  # Вихідний контроль
         self.type = type  # 'smooth' або 'corner'
 
-        # ВАГА (Weight) для раціональної кривої
-        # Для спрощення інтерфейсу, ця вага впливатиме на "тяжіння" вусиків (P1, P2)
-        self.weight = 1.0
+        # ВАГИ (окремо для кожної точки)
+        self.w_pos = 1.0
+        self.w_in = 1.0
+        self.w_out = 1.0
 
 
 # 3. КЛАС ПОЛОТНА (CANVAS)
@@ -74,20 +69,11 @@ class CanvasWidget(QWidget):
 
         # -- ІНІЦІАЛІЗАЦІЯ КОНТУРУ --
         raw_points = [
-            (0, 200, 'corner'),
-            (25, 160, 'smooth'),
-            (50, 100, 'smooth'),
-            (65, 50, 'corner'),
-            (10, 50, 'corner'),
-            (150, 20, 'corner'),
-            (100, -30, 'smooth'),
-            (40, -45, 'smooth'),
-            (-40, -45, 'smooth'),
-            (-100, -30, 'smooth'),
-            (-150, 20, 'corner'),
-            (-10, 50, 'corner'),
-            (-70, 50, 'corner'),
-            (-35, 140, 'smooth')
+            (0, 200, 'corner'), (25, 160, 'smooth'), (50, 100, 'smooth'),
+            (65, 50, 'corner'), (10, 50, 'corner'), (150, 20, 'corner'),
+            (100, -30, 'smooth'), (40, -45, 'smooth'), (-40, -45, 'smooth'),
+            (-100, -30, 'smooth'), (-150, 20, 'corner'), (-10, 50, 'corner'),
+            (-70, 50, 'corner'), (-35, 140, 'smooth')
         ]
 
         self.nodes = []
@@ -105,10 +91,12 @@ class CanvasWidget(QWidget):
             node = BezierNode(pos, 'smooth')
             node.handle_in = pos
             node.handle_out = pos
-            node.weight = 1.0
+            # Ваги за замовчуванням
+            node.w_pos = 1.0;
+            node.w_in = 1.0;
+            node.w_out = 1.0
             self.target_nodes.append(node)
 
-        # Стан
         self.show_skeleton = True
         self.transform_matrix = QTransform()
 
@@ -119,7 +107,6 @@ class CanvasWidget(QWidget):
         self.last_mouse_pos = QPointF()
         self.last_node_pos_drag = QPointF()
 
-        # Анімація
         self.is_animating = False
         self.anim_progress = 0.0
         self.tr_dx = 0;
@@ -128,7 +115,6 @@ class CanvasWidget(QWidget):
         self.tr_sx = 1;
         self.tr_sy = 1
 
-        # Посилання на головне вікно для оновлення UI (ваги)
         self.main_window_ref = None
 
     def auto_calculate_handles(self):
@@ -172,11 +158,11 @@ class CanvasWidget(QWidget):
         if target_idx != -1:
             menu = QMenu(self)
             node = self.nodes[target_idx]
-            action_smooth = QAction("Smooth", self);
+            action_smooth = QAction("Зробити Гладкою", self);
             action_smooth.setCheckable(True);
             action_smooth.setChecked(node.type == 'smooth')
             action_smooth.triggered.connect(lambda: self.set_node_type(target_idx, 'smooth'))
-            action_corner = QAction("Corner", self);
+            action_corner = QAction("Зробити Зламом", self);
             action_corner.setCheckable(True);
             action_corner.setChecked(node.type == 'corner')
             action_corner.triggered.connect(lambda: self.set_node_type(target_idx, 'corner'))
@@ -186,15 +172,13 @@ class CanvasWidget(QWidget):
 
     def set_node_type(self, idx, type_):
         self.nodes[idx].type = type_
-        if type_ == 'smooth':
-            self.update_handles_smoothness(idx, 'out')
+        if type_ == 'smooth': self.update_handles_smoothness(idx, 'out')
         self.update()
 
     def mousePressEvent(self, event):
         pos = self.get_logical_pos(event.position())
         if event.button() == Qt.MouseButton.LeftButton:
             if not self.is_animating:
-                # Вусики
                 if self.show_skeleton:
                     for i, node in enumerate(self.nodes):
                         if (node.handle_in - pos).manhattanLength() < self.drag_radius:
@@ -203,7 +187,6 @@ class CanvasWidget(QWidget):
                         if (node.handle_out - pos).manhattanLength() < self.drag_radius:
                             self.set_selection(i, 'out');
                             return
-                # Точки
                 for i, node in enumerate(self.nodes):
                     if (node.pos - pos).manhattanLength() < self.drag_radius * 1.5:
                         self.set_selection(i, 'node');
@@ -216,13 +199,25 @@ class CanvasWidget(QWidget):
     def set_selection(self, idx, type_):
         self.selected_node_idx = idx
         self.selected_handle_type = type_
-        # Оновлюємо UI (спінбокс ваги)
-        if self.main_window_ref:
-            if idx >= 0:
-                self.main_window_ref.spin_weight.setValue(self.nodes[idx].weight)
-                self.main_window_ref.spin_weight.setEnabled(True)
-            else:
-                self.main_window_ref.spin_weight.setEnabled(False)
+
+        # Оновлення UI: показуємо вагу конкретно обраної точки
+        if self.main_window_ref and idx >= 0:
+            self.main_window_ref.spin_weight.setEnabled(True)
+            node = self.nodes[idx]
+            if type_ == 'node':
+                self.main_window_ref.lbl_weight_info.setText("Вага (Вузол):")
+                self.main_window_ref.spin_weight.setValue(node.w_pos)
+            elif type_ == 'in':
+                self.main_window_ref.lbl_weight_info.setText("Вага (Вхід):")
+                self.main_window_ref.spin_weight.setValue(node.w_in)
+            elif type_ == 'out':
+                self.main_window_ref.lbl_weight_info.setText("Вага (Вихід):")
+                self.main_window_ref.spin_weight.setValue(node.w_out)
+        elif self.main_window_ref:
+            self.main_window_ref.lbl_weight_info.setText("Виберіть точку:")
+            self.main_window_ref.spin_weight.setEnabled(False)
+
+        self.update()
 
     def mouseMoveEvent(self, event):
         pos = self.get_logical_pos(event.position())
@@ -249,7 +244,6 @@ class CanvasWidget(QWidget):
             self.update_transform()
 
     def mouseReleaseEvent(self, event):
-        # self.selected_node_idx = -1 # Не скидаємо вибір, щоб можна було міняти вагу
         pass
 
     def update_transform(self):
@@ -274,8 +268,10 @@ class CanvasWidget(QWidget):
             n_curr.pos = self.lerp(n_curr.pos, n_targ.pos, progress)
             n_curr.handle_in = self.lerp(n_curr.handle_in, n_targ.handle_in, progress)
             n_curr.handle_out = self.lerp(n_curr.handle_out, n_targ.handle_out, progress)
-            # Інтерполяція ваги
-            n_curr.weight = n_curr.weight + (n_targ.weight - n_curr.weight) * 0.05
+            # Інтерполяція всіх ваг
+            n_curr.w_pos = n_curr.w_pos + (n_targ.w_pos - n_curr.w_pos) * 0.05
+            n_curr.w_in = n_curr.w_in + (n_targ.w_in - n_curr.w_in) * 0.05
+            n_curr.w_out = n_curr.w_out + (n_targ.w_out - n_curr.w_out) * 0.05
         self.update()
 
     def lerp(self, p1, p2, t):
@@ -288,37 +284,31 @@ class CanvasWidget(QWidget):
         painter.setTransform(self.transform_matrix)
         self.draw_grid(painter)
 
-        # --- МАЛЮВАННЯ РАЦІОНАЛЬНОЇ КРИВОЇ ---
         path = QPainterPath()
         n = len(self.nodes)
-
-        # Кількість кроків для апроксимації кожного сегмента
-        steps_per_segment = 40
+        steps = 40
 
         if n > 0:
             path.moveTo(self.nodes[0].pos)
             for i in range(n):
-                # Поточний вузол і наступний
-                curr_node = self.nodes[i]
+                curr = self.nodes[i]
                 next_node = self.nodes[(i + 1) % n]
 
-                # 4 контрольні точки для сегмента
-                p0 = curr_node.pos
-                p1 = curr_node.handle_out
+                # Координати
+                p0 = curr.pos
+                p1 = curr.handle_out
                 p2 = next_node.handle_in
                 p3 = next_node.pos
 
-                # Ваги
-                # Крайні точки (P0, P3) зазвичай мають вагу 1 для стиковки
-                # Середні точки (P1, P2) беруть вагу відповідних вузлів
-                w0 = 1.0
-                w1 = curr_node.weight
-                w2 = next_node.weight
-                w3 = 1.0
+                # Ваги (Тепер динамічні для всіх точок)
+                w0 = curr.w_pos
+                w1 = curr.w_out
+                w2 = next_node.w_in
+                w3 = next_node.w_pos
 
-                # Вручну розраховуємо точки (інженерний/раціональний вигляд)
-                for s in range(1, steps_per_segment + 1):
-                    t = s / steps_per_segment
+                # Малювання
+                for s in range(1, steps + 1):
+                    t = s / steps
                     pt = RationalBezierMath.get_point(t, p0, p1, p2, p3, w0, w1, w2, w3)
                     path.lineTo(pt)
 
@@ -346,17 +336,31 @@ class CanvasWidget(QWidget):
         for i, node in enumerate(self.nodes):
             painter.setPen(Qt.NoPen)
             if i == self.selected_node_idx:
-                painter.setBrush(QColor("#FFFF00"))  # Підсвітка обраного
-            elif node.type == 'smooth':
-                painter.setBrush(QColor("#FF0000"))
+                if self.selected_handle_type == 'node':
+                    painter.setBrush(QColor("#FFFF00"))
+                else:
+                    painter.setBrush(QColor("#FF0000")) if node.type == 'smooth' else painter.setBrush(
+                        QColor("#FF3333"))
             else:
-                painter.setBrush(QColor("#FF3333"))
+                if node.type == 'smooth':
+                    painter.setBrush(QColor("#FF0000"))
+                else:
+                    painter.setBrush(QColor("#FF3333"))
 
             r = (6 if node.type == 'smooth' else 5) / self.tr_sx
             if node.type == 'smooth':
                 painter.drawEllipse(node.pos, r, r)
             else:
                 painter.drawRect(node.pos.x() - r, node.pos.y() - r, r * 2, r * 2)
+
+            # Підсвітка обраного вусика
+            if i == self.selected_node_idx:
+                if self.selected_handle_type == 'in':
+                    painter.setBrush(QColor("#FFFF00"))
+                    painter.drawEllipse(node.handle_in, 4 / self.tr_sx, 4 / self.tr_sx)
+                elif self.selected_handle_type == 'out':
+                    painter.setBrush(QColor("#FFFF00"))
+                    painter.drawEllipse(node.handle_out, 4 / self.tr_sx, 4 / self.tr_sx)
 
     def draw_grid(self, painter):
         pen = QPen(QColor("#505050"), 0);
@@ -394,19 +398,20 @@ class MainWindow(QMainWindow):
         self.chk_skel.setChecked(True)
         self.chk_skel.stateChanged.connect(self.toggle_skel)
 
-        # Додаємо керування вагою
-        vbox.addWidget(QLabel("Вага обраної точки (Weight):"))
+        # UI ваги
+        self.lbl_weight_info = QLabel("Виберіть точку:")
+        vbox.addWidget(self.lbl_weight_info)
         self.spin_weight = QDoubleSpinBox()
-        self.spin_weight.setRange(0.1, 10.0)
+        self.spin_weight.setRange(0.1, 50.0)
         self.spin_weight.setSingleStep(0.1)
         self.spin_weight.setValue(1.0)
-        self.spin_weight.setEnabled(False)  # Активується при виборі точки
+        self.spin_weight.setEnabled(False)
         self.spin_weight.valueChanged.connect(self.update_weight)
 
         vbox.addWidget(self.spin_weight)
         vbox.addWidget(self.chk_skel)
-        vbox.addWidget(QLabel("<b>ПКМ по точці:</b> Тип (Smooth/Corner)"))
-        vbox.addWidget(QLabel("<b>ЛКМ:</b> Перетягування"))
+        vbox.addWidget(QLabel("<b>ПКМ по точці:</b> Тип"))
+        vbox.addWidget(QLabel("<b>ЛКМ:</b> Виділити/Перетягнути"))
         grp_opts.setLayout(vbox)
         ctrl_layout.addWidget(grp_opts)
 
@@ -421,7 +426,7 @@ class MainWindow(QMainWindow):
 
         ctrl_layout.addStretch()
         self.canvas = CanvasWidget()
-        self.canvas.main_window_ref = self  # Передаємо посилання для зворотного зв'язку
+        self.canvas.main_window_ref = self
         layout.addWidget(controls)
         layout.addWidget(self.canvas)
 
@@ -435,8 +440,15 @@ class MainWindow(QMainWindow):
 
     def update_weight(self):
         idx = self.canvas.selected_node_idx
+        type_ = self.canvas.selected_handle_type
         if idx >= 0:
-            self.canvas.nodes[idx].weight = self.spin_weight.value()
+            val = self.spin_weight.value()
+            if type_ == 'node':
+                self.canvas.nodes[idx].w_pos = val
+            elif type_ == 'in':
+                self.canvas.nodes[idx].w_in = val
+            elif type_ == 'out':
+                self.canvas.nodes[idx].w_out = val
             self.canvas.update()
 
     def toggle_anim(self):
